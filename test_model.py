@@ -24,6 +24,44 @@ def load_questions(filepath='question100.txt'):
 
 def test_model(args):
     """测试模型"""
+    # 确定权重路径
+    if args.load_model:
+        weight_path = args.load_model
+    else:
+        weight_path = f'./out/{args.weight}_{args.hidden_size}.pth'
+
+    if not os.path.exists(weight_path):
+        print(f'Error: Weight file not found: {weight_path}')
+        return
+
+    # 加载state_dict，用于推断参数
+    state_dict = torch.load(weight_path, map_location=args.device)
+
+    # 自动推断hidden_size和num_hidden_layers (如果未指定或使用新模式)
+    if args.load_model or args.auto_config:
+        try:
+            # 推断 hidden_size 从 embedding 权重 (vocab_size, hidden_size)
+            if 'model.embed_tokens.weight' in state_dict:
+                hidden_size_inferred = state_dict['model.embed_tokens.weight'].shape[1]
+                args.hidden_size = hidden_size_inferred
+                print(f"[Auto-Config] Inferred hidden_size: {args.hidden_size}")
+            
+            # 推断 num_hidden_layers 从 layers.*
+            max_layer_idx = -1
+            for key in state_dict.keys():
+                if key.startswith('model.layers.'):
+                    # key格式通常为 model.layers.0.xxx
+                    parts = key.split('.')
+                    if len(parts) > 2 and parts[2].isdigit():
+                        layer_idx = int(parts[2])
+                        if layer_idx > max_layer_idx:
+                            max_layer_idx = layer_idx
+            args.num_hidden_layers = max_layer_idx + 1
+            print(f"[Auto-Config] Inferred num_hidden_layers: {args.num_hidden_layers}")
+
+        except Exception as e:
+            print(f"Warning: Auto-config failed ({e}). Using provided arguments.")
+
     # 加载tokenizer和模型
     tokenizer = AutoTokenizer.from_pretrained('model')
     config = MiniMindConfig(
@@ -31,14 +69,7 @@ def test_model(args):
         num_hidden_layers=args.num_hidden_layers
     )
     model = MiniMindForCausalLM(config)
-
-    # 构建权重路径
-    weight_path = f'./out/{args.weight}_{args.hidden_size}.pth'
-    if not os.path.exists(weight_path):
-        print(f'Error: Weight file not found: {weight_path}')
-        return
-
-    model.load_state_dict(torch.load(weight_path, map_location=args.device))
+    model.load_state_dict(state_dict)
     model = model.eval().to(args.device)
 
     # 计算参数量
@@ -46,8 +77,9 @@ def test_model(args):
 
     # 加载问题
     prompts = load_questions(args.question_file)
-
-    print(f'Model: {args.weight} ({args.hidden_size}x{args.num_hidden_layers}, {param_count:.1f}M params)')
+    
+    model_name = os.path.basename(weight_path)
+    print(f'Model: {model_name} ({args.hidden_size}x{args.num_hidden_layers}, {param_count:.1f}M params)')
     print(f'Testing {len(prompts)} questions...')
 
     results = []
@@ -83,12 +115,13 @@ def test_model(args):
     total_time = time.time() - start_time
 
     # 保存结果
-    output_file = f'test_results_{args.weight}_{args.hidden_size}x{args.num_hidden_layers}.txt'
+    os.makedirs('results', exist_ok=True)
+    output_file = os.path.join('results', f'{model_name}.txt')
 
     with open(output_file, 'w', encoding='utf-8') as f:
         # 写入头部信息
         f.write('=' * 60 + '\n')
-        f.write(f'Model: {args.weight}\n')
+        f.write(f'Model: {model_name}\n')
         f.write(f'Architecture: {args.hidden_size} x {args.num_hidden_layers}\n')
         f.write(f'Parameters: {param_count:.1f}M\n')
         f.write(f'Total Time: {total_time:.1f}s\n')
@@ -108,9 +141,11 @@ def test_model(args):
 
 def main():
     parser = argparse.ArgumentParser(description='模型测试脚本')
-    parser.add_argument('--weight', default='full_sft', type=str, help='权重名称')
-    parser.add_argument('--hidden_size', default=512, type=int, help='隐藏层维度')
-    parser.add_argument('--num_hidden_layers', default=8, type=int, help='层数')
+    parser.add_argument('load_model', nargs='?', default=None, help='直接指定权重文件路径')
+    parser.add_argument('--weight', default='full_sft', type=str, help='权重名称 (旧模式)')
+    parser.add_argument('--hidden_size', default=512, type=int, help='隐藏层维度 (自动推断可覆盖)')
+    parser.add_argument('--num_hidden_layers', default=8, type=int, help='层数 (自动推断可覆盖)')
+    parser.add_argument('--auto_config', action='store_true', default=True, help='是否自动推断配置')
     parser.add_argument('--max_tokens', default=150, type=int, help='最大生成长度')
     parser.add_argument('--temperature', default=0.85, type=float, help='温度')
     parser.add_argument('--top_p', default=0.85, type=float, help='top_p')

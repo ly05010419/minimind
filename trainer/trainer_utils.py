@@ -121,9 +121,23 @@ def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', sav
 
     if from_weight!= 'none':
         moe_suffix = '_moe' if lm_config.use_moe else ''
+        # 优先尝试默认拼接规则
         weight_path = f'{save_dir}/{from_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
-        weights = torch.load(weight_path, map_location=device)
-        model.load_state_dict(weights, strict=False)
+        
+        # 如果拼接后的文件不存在，尝试直接使用 from_weight 或拼上路径
+        if not os.path.exists(weight_path):
+             alt_path = f'{save_dir}/{from_weight}.pth'
+             if os.path.exists(alt_path):
+                 weight_path = alt_path
+             elif os.path.exists(from_weight):
+                 weight_path = from_weight
+                 
+        if os.path.exists(weight_path):
+            Logger(f'Loading weights from: {weight_path}')
+            weights = torch.load(weight_path, map_location=device)
+            model.load_state_dict(weights, strict=False)
+        else:
+            Logger(f'Warning: Weight file not found: {weight_path}')
 
     get_model_params(model, lm_config)
     Logger(f'Trainable Params: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f}M')
